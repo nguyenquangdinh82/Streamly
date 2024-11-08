@@ -8,6 +8,38 @@ import requests
 import base64
 from openai import OpenAI, OpenAIError
 
+import google.generativeai as genai
+
+# 1. Cấu hình API
+def configure_api():
+    """Cấu hình Google Generative AI API"""
+    GOOGLE_API_KEY = st.secrets.get("GOOGLE_API_KEY", None)
+    if not GOOGLE_API_KEY:
+        st.error("Please add your GOOGLE_API_KEY to the Streamlit secrets.toml file.")
+        st.stop()
+    genai.configure(api_key=GOOGLE_API_KEY)
+    system_prompt = """You are Streamly, a specialized AI assistant trained in Streamlit.
+        Streamly, is powered by the OpenAI GPT-4o-mini model, released on July 18, 2024.
+        You are trained up to Streamlit Version 1.36.0, release on June 20, 2024.
+        Refer to conversation history to provide context to your response.
+        You were created by Madie Laine, an ggAI Researcher."""
+    global model
+    model = genai.GenerativeModel('gemini-1.5-flash',
+                                  system_instruction=system_prompt
+                                  )
+
+configure_api()  # Thiết lập API khi khởi động
+
+# 2. Hàm xử lý yêu cầu và phản hồi
+def generate_response(request, histori):
+    chat = model.start_chat(
+    history=histori
+)
+    
+    response = chat.send_message(request)
+    return response.text.strip()
+
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
@@ -15,15 +47,6 @@ logging.basicConfig(level=logging.INFO)
 NUMBER_OF_MESSAGES_TO_DISPLAY = 20
 API_DOCS_URL = "https://docs.streamlit.io/library/api-reference"
 
-# Retrieve and validate API key
-OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", None)
-if not OPENAI_API_KEY:
-    st.error("Please add your OpenAI API key to the Streamlit secrets.toml file.")
-    st.stop()
-
-# Assign OpenAI API Key
-openai.api_key = OPENAI_API_KEY
-client = openai.OpenAI()
 
 # Streamlit Page Configuration
 st.set_page_config(
@@ -131,13 +154,7 @@ def initialize_conversation():
     """
     assistant_message = "Hello! I am Streamly. How can I assist you with Streamlit today?"
 
-    conversation_history = [
-        {"role": "system", "content": "You are Streamly, a specialized AI assistant trained in Streamlit."},
-        {"role": "system", "content": "Streamly, is powered by the OpenAI GPT-4o-mini model, released on July 18, 2024."},
-        {"role": "system", "content": "You are trained up to Streamlit Version 1.36.0, release on June 20, 2024."},
-        {"role": "system", "content": "Refer to conversation history to provide context to your response."},
-        {"role": "system", "content": "You were created by Madie Laine, an OpenAI Researcher."},
-        {"role": "assistant", "content": assistant_message}
+    conversation_history = [    {"role": "model", "parts": assistant_message}
     ]
     return conversation_history
 
@@ -204,36 +221,26 @@ def on_chat_submit(chat_input, latest_updates):
     if 'conversation_history' not in st.session_state:
         st.session_state.conversation_history = initialize_conversation()
 
-    st.session_state.conversation_history.append({"role": "user", "content": user_input})
+    assistant_reply = ""
 
-    try:
-        model_engine = "gpt-4o-mini"
-        assistant_reply = ""
-
-        if "latest updates" in user_input:
-            assistant_reply = "Here are the latest highlights from Streamlit:\n"
-            highlights = latest_updates.get("Highlights", {})
-            if highlights:
-                for version, info in highlights.items():
-                    description = info.get("Description", "No description available.")
-                    assistant_reply += f"- **{version}**: {description}\n"
-            else:
-                assistant_reply = "No highlights found."
+    if "latest updates" in user_input:
+        assistant_reply = "Here are the latest highlights from Streamlit:\n"
+        highlights = latest_updates.get("Highlights", {})
+        if highlights:
+            for version, info in highlights.items():
+                description = info.get("Description", "No description available.")
+                assistant_reply += f"- **{version}**: {description}\n"
         else:
-            response = client.chat.completions.create(
-                model=model_engine,
-                messages=st.session_state.conversation_history
-            )
-            assistant_reply = response.choices[0].message.content
+            assistant_reply = "No highlights found."
+    else:
+        response = generate_response(user_input,st.session_state.conversation_history)
+        assistant_reply = response
 
-        st.session_state.conversation_history.append({"role": "assistant", "content": assistant_reply})
-        st.session_state.history.append({"role": "user", "content": user_input})
-        st.session_state.history.append({"role": "assistant", "content": assistant_reply})
+    st.session_state.conversation_history.append({"role": "user", "parts": user_input})
 
-    except OpenAIError as e:
-        logging.error(f"Error occurred: {e}")
-        st.error(f"OpenAI Error: {str(e)}")
-
+    st.session_state.conversation_history.append({"role": "model", "parts": assistant_reply})
+    st.session_state.history.append({"role": "user", "parts": user_input})
+    st.session_state.history.append({"role": "model", "parts": assistant_reply})
 def initialize_session_state():
     """Initialize session state variables."""
     if "history" not in st.session_state:
@@ -249,7 +256,7 @@ def main():
 
     if not st.session_state.history:
         initial_bot_message = "Hello! How can I assist you with Streamlit today?"
-        st.session_state.history.append({"role": "assistant", "content": initial_bot_message})
+        st.session_state.history.append({"role": "model", "parts": initial_bot_message})
         st.session_state.conversation_history = initialize_conversation()
 
     # Insert custom CSS for glowing effect
@@ -334,9 +341,9 @@ def main():
         # Display chat history
         for message in st.session_state.history[-NUMBER_OF_MESSAGES_TO_DISPLAY:]:
             role = message["role"]
-            avatar_image = "imgs/avatar_streamly.png" if role == "assistant" else "imgs/stuser.png" if role == "user" else None
+            avatar_image = "imgs/avatar_streamly.png" if role == "model" else "imgs/stuser.png" if role == "user" else None
             with st.chat_message(role, avatar=avatar_image):
-                st.write(message["content"])
+                st.write(message["parts"])
 
     else:
         display_streamlit_updates()
